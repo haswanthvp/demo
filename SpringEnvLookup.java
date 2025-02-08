@@ -1,15 +1,20 @@
 package com.example.logging;
 
+import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.lookup.StrLookup;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.boot.SpringApplication;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.Environment;
 
 public class SpringEnvLookup implements StrLookup {
 
-    private static final AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(SpringConfig.class);
+    private static ConfigurableApplicationContext context;
     private final Environment environment;
 
     public SpringEnvLookup() {
+        if (context == null) {
+            context = SpringApplication.run(Application.class);  // Replace with your main Spring Boot application class
+        }
         this.environment = context.getBean(Environment.class);
     }
 
@@ -19,7 +24,7 @@ public class SpringEnvLookup implements StrLookup {
     }
 
     @Override
-    public String lookup(org.apache.logging.log4j.util.Supplier<String> key) {
-        return lookup(key.get());
+    public String lookup(LogEvent event, String key) {
+        return lookup(key);  // Ignore the event and delegate to the other lookup method
     }
 }
