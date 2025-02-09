@@ -5,7 +5,6 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.plugins.*;
 import org.apache.logging.log4j.core.layout.PatternLayout;
-import org.springframework.boot.SpringApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.Environment;
 
@@ -21,15 +20,13 @@ import java.util.concurrent.LinkedBlockingQueue;
 @Plugin(name = "ElasticsearchAppender", category = "Core", elementType = "appender", printObject = true)
 public class ElasticsearchAppender extends AbstractAppender {
 
-    private final ElasticsearchClient client;
-    private final String indexName;
     private static final BlockingQueue<LogEvent> logBuffer = new LinkedBlockingQueue<>();
     private static volatile boolean applicationInitialized = false;
+    private static ElasticsearchClient client;
+    private static String indexName;
 
-    protected ElasticsearchAppender(String name, PatternLayout layout, ElasticsearchClient client, String indexName) {
+    protected ElasticsearchAppender(String name, PatternLayout layout) {
         super(name, null, layout, true);
-        this.client = client;
-        this.indexName = indexName;
     }
 
     @PluginFactory
@@ -48,23 +45,13 @@ public class ElasticsearchAppender extends AbstractAppender {
                     .build();
         }
 
-        // Start Spring context to access environment properties
-        ConfigurableApplicationContext context = SpringApplication.run(Application.class);  // Replace with your Spring Boot main class
-        Environment env = context.getBean(Environment.class);
-
-        String elasticsearchUrl = getPropertyWithRetry(env, "elasticsearch.url", 5, 1000);
-        String indexName = getPropertyWithRetry(env, "elasticsearch.index", 5, 1000);
-        String username = getPropertyWithRetry(env, "elasticsearch.username", 5, 1000);
-        String password = getPropertyWithRetry(env, "elasticsearch.password", 5, 1000);
-
-        ElasticsearchClient client = ElasticsearchClientFactory.createClient(elasticsearchUrl, username, password);
-        return new ElasticsearchAppender(name, layout, client, indexName);
+        return new ElasticsearchAppender(name, layout);
     }
 
     @Override
     public void append(LogEvent event) {
         if (!applicationInitialized) {
-            logBuffer.add(event.toImmutable());  // Buffer the log event if application is not initialized
+            logBuffer.add(event.toImmutable());  // Buffer the log event until application is initialized
             return;
         }
         sendLogToElasticsearch(event);
@@ -91,22 +78,6 @@ public class ElasticsearchAppender extends AbstractAppender {
         }
     }
 
-    private static String getPropertyWithRetry(Environment env, String propertyName, int maxRetries, long delayMillis) {
-        for (int i = 0; i < maxRetries; i++) {
-            String value = env.getProperty(propertyName);
-            if (value != null) {
-                return value;
-            }
-            try {
-                Thread.sleep(delayMillis);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Interrupted while waiting for property: " + propertyName, e);
-            }
-        }
-        throw new RuntimeException("Failed to retrieve property: " + propertyName + " after " + maxRetries + " retries.");
-    }
-
     private String getHostName() {
         try {
             return InetAddress.getLocalHost().getHostName();
@@ -131,18 +102,38 @@ public class ElasticsearchAppender extends AbstractAppender {
         return sw.toString();
     }
 
-    public static void setApplicationInitialized(boolean initialized) {
-        applicationInitialized = initialized;
-        if (initialized) {
-            flushBufferedLogs();
+    public static void initializeClient(ConfigurableApplicationContext context) {
+        Environment env = context.getBean(Environment.class);
+        
+        // Fetch properties from the Spring environment
+        String elasticsearchUrl = env.getProperty("elasticsearch.url");
+        indexName = env.getProperty("elasticsearch.index");
+        String username = env.getProperty("elasticsearch.username");
+        String password = env.getProperty("elasticsearch.password");
+
+        if (elasticsearchUrl == null || indexName == null || username == null || password == null) {
+            throw new IllegalStateException("Elasticsearch configuration is incomplete");
         }
+
+        client = ElasticsearchClientFactory.createClient(elasticsearchUrl, username, password);
+        applicationInitialized = true;
+        flushBufferedLogs();
     }
 
     private static void flushBufferedLogs() {
         LogEvent event;
         while ((event = logBuffer.poll()) != null) {
-            LOGGER.debug("Flushing buffered log event.");
-            // Reuse the existing Elasticsearch client and send logs
+            LOGGER.debug("Flushing buffered log event: {}", event.getMessage().getFormattedMessage());
+            try {
+                Map<String, Object> logEntry = new HashMap<>();
+                logEntry.put("@timestamp", event.getTimeMillis());
+                logEntry.put("level", event.getLevel().toString());
+                logEntry.put("logger_name", event.getLoggerName());
+                logEntry.put("message", event.getMessage().getFormattedMessage());
+                client.index(i -> i.index(indexName).document(logEntry));
+            } catch (Exception e) {
+                LOGGER.error("Failed to flush buffered log event", e);
+            }
         }
     }
 
