@@ -1,0 +1,9 @@
+curl -X POST "http://localhost:9200/my-log-index/_doc" \
+-u "elastic:mypassword" \
+-H "Content-Type: application/json" \
+-d '{
+  "timestamp": "'$(date --iso-8601=seconds)'",
+  "level": "INFO",
+  "loggerName": "com.example.MyClass",
+  "message": "This is a log message with authentication"
+}'
